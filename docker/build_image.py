@@ -1,9 +1,12 @@
 import argparse
 import os
+from datetime import datetime
 from typing import Any
 
 docker_registry = os.environ['DOCKER_REGISTRY']
 assert docker_registry, 'You must pass a valid DOCKER_REGISTRY'
+timestamp = datetime.now()
+formatted_time = timestamp.strftime('%Y%m%d%H%M%S')
 
 
 class Builder:
@@ -18,9 +21,7 @@ class Builder:
     def init_args(self, args: Any) -> Any:
         if not args.base_image:
             # A mirrored image of nvidia/cuda:12.4.0-devel-ubuntu22.04
-            args.base_image = (
-                'modelscope-image-registry.cn-wulanchabu.cr.aliyuncs.com/'
-                'modelscope/mirror:12.4.0-devel-ubuntu22.04')
+            args.base_image = 'nvidia/cuda:12.1.0-devel-ubuntu22.04'
         if not args.torch_version:
             args.torch_version = '2.3.0'
             args.torchaudio_version = '2.3.0'
@@ -87,12 +88,16 @@ class BaseCPUImageBuilder(Builder):
         return content
 
     def build(self):
-        image_tag = f'{docker_registry}:ubuntu{self.args.ubuntu_version}-torch{self.args.torch_version}-base'
+        image_tag = (
+            f'{docker_registry}:ubuntu{self.args.ubuntu_version}-{self.args.python_tag}-'
+            f'torch{self.args.torch_version}-base')
         return os.system(
             f'DOCKER_BUILDKIT=0 docker build -t {image_tag} -f Dockerfile .')
 
     def push(self):
-        image_tag = f'{docker_registry}:ubuntu{self.args.ubuntu_version}-torch{self.args.torch_version}-base'
+        image_tag = (
+            f'{docker_registry}:ubuntu{self.args.ubuntu_version}-{self.args.python_tag}-'
+            f'torch{self.args.torch_version}-base')
         return os.system(f'docker push {image_tag}')
 
 
@@ -112,14 +117,14 @@ class BaseGPUImageBuilder(Builder):
 
     def build(self) -> int:
         image_tag = (
-            f'{docker_registry}:ubuntu{self.args.ubuntu_version}-cuda{self.args.cuda_version}-'
+            f'{docker_registry}:ubuntu{self.args.ubuntu_version}-cuda{self.args.cuda_version}-{self.args.python_tag}-'
             f'torch{self.args.torch_version}-tf{self.args.tf_version}-base')
         return os.system(
             f'DOCKER_BUILDKIT=0 docker build -t {image_tag} -f Dockerfile .')
 
     def push(self):
         image_tag = (
-            f'{docker_registry}:ubuntu{self.args.ubuntu_version}-cuda{self.args.cuda_version}-'
+            f'{docker_registry}:ubuntu{self.args.ubuntu_version}-cuda{self.args.cuda_version}-{self.args.python_tag}-'
             f'torch{self.args.torch_version}-tf{self.args.tf_version}-base')
         return os.system(f'docker push {image_tag}')
 
@@ -130,9 +135,10 @@ class CPUImageBuilder(Builder):
         meta_file = './docker/install_cpu.sh'
         version_args = (
             f'{self.args.torch_version} {self.args.torchvision_version} '
-            f'{self.args.torchaudio_version} {self.args.modelscope_branch} {self.args.swift_branch}'
-        )
-        base_image = f'{docker_registry}:ubuntu{self.args.ubuntu_version}-torch{self.args.torch_version}-base'
+            f'{self.args.torchaudio_version}')
+        base_image = (
+            f'{docker_registry}:ubuntu{self.args.ubuntu_version}-{self.args.python_tag}'
+            f'-torch{self.args.torch_version}-base')
         extra_content = """\nRUN pip install adaseq\nRUN pip install pai-easycv"""
 
         with open('docker/Dockerfile.ubuntu', 'r') as f:
@@ -141,6 +147,9 @@ class CPUImageBuilder(Builder):
             content = content.replace('{extra_content}', extra_content)
             content = content.replace('{meta_file}', meta_file)
             content = content.replace('{version_args}', version_args)
+            content = content.replace('{modelscope_branch}',
+                                      self.args.modelscope_branch)
+            content = content.replace('{swift_branch}', self.args.swift_branch)
         return content
 
     def build(self) -> int:
@@ -155,7 +164,17 @@ class CPUImageBuilder(Builder):
             f'{docker_registry}:ubuntu{self.args.ubuntu_version}-{self.args.python_tag}-'
             f'torch{self.args.torch_version}-{self.args.modelscope_version}-test'
         )
-        return os.system(f'docker push {image_tag}')
+        ret = os.system(f'docker push {image_tag}')
+        if ret != 0:
+            return ret
+        image_tag2 = (
+            f'{docker_registry}:ubuntu{self.args.ubuntu_version}-{self.args.python_tag}-'
+            f'torch{self.args.torch_version}-{self.args.modelscope_version}-{formatted_time}-test'
+        )
+        ret = os.system(f'docker tag {image_tag} {image_tag2}')
+        if ret != 0:
+            return ret
+        return os.system(f'docker push {image_tag2}')
 
 
 class GPUImageBuilder(Builder):
@@ -165,10 +184,10 @@ class GPUImageBuilder(Builder):
         extra_content = """\nRUN pip install adaseq\nRUN pip install pai-easycv"""
         version_args = (
             f'{self.args.torch_version} {self.args.torchvision_version} {self.args.torchaudio_version} '
-            f'{self.args.vllm_version} {self.args.lmdeploy_version} {self.args.autogptq_version} '
-            f'{self.args.modelscope_branch} {self.args.swift_branch}')
+            f'{self.args.vllm_version} {self.args.lmdeploy_version} {self.args.autogptq_version}'
+        )
         base_image = (
-            f'{docker_registry}:ubuntu{self.args.ubuntu_version}-cuda{self.args.cuda_version}-'
+            f'{docker_registry}:ubuntu{self.args.ubuntu_version}-cuda{self.args.cuda_version}-{self.args.python_tag}-'
             f'torch{self.args.torch_version}-tf{self.args.tf_version}-base')
         with open('docker/Dockerfile.ubuntu', 'r') as f:
             content = f.read()
@@ -176,6 +195,9 @@ class GPUImageBuilder(Builder):
             content = content.replace('{extra_content}', extra_content)
             content = content.replace('{meta_file}', meta_file)
             content = content.replace('{version_args}', version_args)
+            content = content.replace('{modelscope_branch}',
+                                      self.args.modelscope_branch)
+            content = content.replace('{swift_branch}', self.args.swift_branch)
         return content
 
     def build(self) -> int:
@@ -190,7 +212,17 @@ class GPUImageBuilder(Builder):
             f'{docker_registry}:ubuntu{self.args.ubuntu_version}-cuda{self.args.cuda_version}-'
             f'{self.args.python_tag}-torch{self.args.torch_version}-tf{self.args.tf_version}-'
             f'{self.args.modelscope_version}-test')
-        return os.system(f'docker push {image_tag}')
+        ret = os.system(f'docker push {image_tag}')
+        if ret != 0:
+            return ret
+        image_tag2 = (
+            f'{docker_registry}:ubuntu{self.args.ubuntu_version}-cuda{self.args.cuda_version}-'
+            f'{self.args.python_tag}-torch{self.args.torch_version}-tf{self.args.tf_version}-'
+            f'{self.args.modelscope_version}-{formatted_time}-test')
+        ret = os.system(f'docker tag {image_tag} {image_tag2}')
+        if ret != 0:
+            return ret
+        return os.system(f'docker push {image_tag2}')
 
 
 class LLMImageBuilder(Builder):
@@ -198,9 +230,7 @@ class LLMImageBuilder(Builder):
     def init_args(self, args) -> Any:
         if not args.base_image:
             # A mirrored image of nvidia/cuda:12.4.0-devel-ubuntu22.04
-            args.base_image = (
-                'modelscope-image-registry.cn-wulanchabu.cr.aliyuncs.com/modelscope/'
-                'mirror:12.4.0-devel-ubuntu22.04')
+            args.base_image = 'nvidia/cuda:12.4.0-devel-ubuntu22.04'
         if not args.torch_version:
             args.torch_version = '2.4.0'
             args.torchaudio_version = '2.4.0'
@@ -223,14 +253,17 @@ class LLMImageBuilder(Builder):
                                                   self.args.python_version)
         version_args = (
             f'{self.args.torch_version} {self.args.torchvision_version} {self.args.torchaudio_version} '
-            f'{self.args.vllm_version} {self.args.lmdeploy_version} {self.args.autogptq_version} '
-            f'{self.args.modelscope_branch} {self.args.swift_branch}')
+            f'{self.args.vllm_version} {self.args.lmdeploy_version} {self.args.autogptq_version}'
+        )
         with open('docker/Dockerfile.ubuntu', 'r') as f:
             content = f.read()
             content = content.replace('{base_image}', self.args.base_image)
             content = content.replace('{extra_content}', extra_content)
             content = content.replace('{meta_file}', meta_file)
             content = content.replace('{version_args}', version_args)
+            content = content.replace('{modelscope_branch}',
+                                      self.args.modelscope_branch)
+            content = content.replace('{swift_branch}', self.args.swift_branch)
         return content
 
     def build(self) -> int:
@@ -245,7 +278,17 @@ class LLMImageBuilder(Builder):
             f'{docker_registry}:ubuntu{self.args.ubuntu_version}-cuda{self.args.cuda_version}-'
             f'{self.args.python_tag}-torch{self.args.torch_version}-{self.args.modelscope_version}-LLM-test'
         )
-        return os.system(f'docker push {image_tag}')
+        ret = os.system(f'docker push {image_tag}')
+        if ret != 0:
+            return ret
+        image_tag2 = (
+            f'{docker_registry}:ubuntu{self.args.ubuntu_version}-cuda{self.args.cuda_version}-'
+            f'{self.args.python_tag}-torch{self.args.torch_version}-'
+            f'{self.args.modelscope_version}-LLM-{formatted_time}-test')
+        ret = os.system(f'docker tag {image_tag} {image_tag2}')
+        if ret != 0:
+            return ret
+        return os.system(f'docker push {image_tag2}')
 
 
 parser = argparse.ArgumentParser()
